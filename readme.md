@@ -46,12 +46,31 @@ The Analyzer evaluates your OutSystems ecosystem across four main dimensions:
 
 ```text
 outsystems-factory-analyzer/
-├── .gitignore
-├── README.md
-├── CLAUDE.md
+├── CLAUDE.md                  # How to read the code and extend the analysis (for Claude and humans)
 ├── prompts/
-│   └── REPORT_PROMPT.md       # LLM prompt template for synthesis and executive reporting
+│   ├── NARRATIVE.md           # How executive summaries are written from the findings
+│   └── REPORT_*.md            # Original report briefs
 ├── scripts/
-│   └── parse_factory.py       # Core XML parsing engine for OutSystems OML exports
-├── input/                     # Target directory for factory XML/OML exports
-└── output/                    # Generated structural JSON maps, metrics, and Markdown reports
+│   ├── run_pipeline.py        # Runs everything below, in order
+│   ├── extract_model.py       # XML -> output/model/<Module>.json (one parse, cached)
+│   ├── decompile_actions.py   # model -> output/code/<Module>/ readable pseudocode
+│   ├── build_index.py         # model -> output/index.json (layers, call graph, dependencies)
+│   ├── layers.py              # Architecture Canvas layers and cycle detection
+│   ├── checks/                # Rules per pillar -> output/findings/<pillar>.json
+│   │   ├── architecture.py  performance.py  security.py  maintainability.py
+│   │   └── common.py          # Findings format, shared lookups, secret masking
+│   ├── report_html.py         # Shared HTML template
+│   ├── generate_reports.py    # findings -> output/<Report>.html
+│   └── generate_app_overview.py  # Application & Business Overview (curated purposes + model facts)
+├── input/                     # Factory XML/OML exports (not versioned)
+└── output/                    # Generated model, pseudocode, findings and reports (not versioned)
+```
+
+## ▶️ Usage
+
+```bash
+python scripts/run_pipeline.py          # all 5 reports; --force re-parses every XML
+```
+
+Reports: `Application_Overview_Report.html`, `Architecture_Report.html`, `Performance_Report.html`,
+`Security_Assessment_Report.html`, `Maintainability_Report.html`. Executive summaries live in `output/narrative/`.

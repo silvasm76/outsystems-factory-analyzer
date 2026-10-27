@@ -1,5 +1,6 @@
 """Render the assessment reports from output/findings/*.json (+ index.json) into output/*.html.
 
+  overview        -> output/Application_Overview_Report.html
   security        -> output/Security_Assessment_Report.html
   maintainability -> output/Maintainability_Report.html
   performance     -> output/Performance_Report.html
@@ -432,8 +433,13 @@ recommendation before refactoring). Only modules in this export are known: "no c
     print("Wrote %s (%d findings)" % (os.path.abspath(path), len(findings)), flush=True)
 
 
-REPORTS = {"security": security_report, "maintainability": maintainability_report, "performance": performance_report,
-           "architecture": architecture_report}
+def overview(output=OUTPUT):
+    from generate_app_overview import overview_report
+    overview_report(output)
+
+
+REPORTS = {"overview": overview, "architecture": architecture_report, "performance": performance_report,
+           "security": security_report, "maintainability": maintainability_report}
 
 if __name__ == "__main__":
     for name in (sys.argv[1:] or list(REPORTS)):

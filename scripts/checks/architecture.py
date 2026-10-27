@@ -23,7 +23,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import Context, finding, write  # noqa: E402
-import analyze_factory as af  # noqa: E402
+import layers as af  # noqa: E402
 
 RANK = af.RANK
 CORE_ORDER = {"CS": 0, "BL": 1, "Sync": 1, "Email": 1, "API": 2, "CW": 2}

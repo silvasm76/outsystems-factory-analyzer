@@ -120,7 +120,8 @@ def check_naming(ctx, out):
         issues = []
         if not MODULE_SUFFIX.search(mod):
             issues.append("module name has no standard suffix (_CS, _BL, _CW, _IS, _Lib, _Th, _API, _Sync...)")
-        bad_timers = [t["action"] for t in m.get("timers", []) if not t["action"].split(".")[-1].startswith("Timer_")]
+        bad_timers = [t["action"] for t in m.get("timers", []) if t["action"] != "<unresolved>"
+                      and not t["action"].split(".")[-1].startswith("Timer_")]
         if bad_timers:
             issues.append("timer actions without Timer_ prefix: " + ", ".join(bad_timers))
         not_pascal = sorted({f["name"] for f in m["flows"] if f["kind"] in ("ServerAction", "ClientAction", "ServiceAPIMethod")
@@ -174,14 +175,19 @@ def check_broken(ctx, out, metrics):
             left = [k for k, n in r.nodes.items() if k not in r.done and n["type"] not in ("Comment",)]
             if left and f["kind"] in LOGIC_KINDS:
                 unreachable.append((f, len(left)))
-        metrics[mod]["unresolved"] = sum(n for _, n in broken)
+        dead_timers = [t["name"] for t in m.get("timers", []) if t["action"] == "<unresolved>"]
+        metrics[mod]["unresolved"] = sum(n for _, n in broken) + len(dead_timers)
         metrics[mod]["unreachable"] = len(unreachable)
-        if broken:
+        if broken or dead_timers:
+            parts = []
+            if broken:
+                parts.append("%d unresolved reference(s) in %d element(s): %s" % (
+                    sum(n for _, n in broken), len(broken),
+                    ", ".join("%s (%d)" % (f["name"], n) for f, n in broken[:8]) + (" ..." if len(broken) > 8 else "")))
+            if dead_timers:
+                parts.append("%d timer(s) whose action was deleted: %s" % (len(dead_timers), ", ".join(dead_timers)))
             out.append(finding("MNT-05", "Medium", "Broken references", "Broken references in flows", mod, "Module %s" % mod,
-                               ctx.file_of(mod, broken[0][0]),
-                               "%d unresolved reference(s) in %d element(s): %s" % (
-                                   sum(n for _, n in broken), len(broken),
-                                   ", ".join("%s (%d)" % (f["name"], n) for f, n in broken[:8]) + (" ..." if len(broken) > 8 else "")),
+                               ctx.file_of(mod, broken[0][0]) if broken else None, "; ".join(parts),
                                "Open the module in Service Studio, refresh dependencies and fix or remove the elements that "
                                "point to deleted entities, structures or actions."))
         if unreachable:

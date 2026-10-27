@@ -685,17 +685,17 @@ def extract(path):
                                           "description": el.get("Description")})
         elif tag.startswith("CustomService-") and "RESTService" in tag and el.get("Name"):
             cafs = el.find("CustomActionFlows")
-            out["restExposed"].append({"name": el.get("Name"), "props": custom_props(m, el),
+            out["restExposed"].append({"name": el.get("Name"), "description": el.get("Description"), "props": custom_props(m, el),
                                        "methods": [rest_method(m, f) for f in (cafs if cafs is not None else [])],
                                        "callbacks": [c.get("Name") for c in el.iter() if c.tag.startswith("Flows.CustomCallbackFlow")]})
         elif tag.startswith("CustomClient-") and el.get("Name"):
             cas = el.find("CustomActions")
-            out["restConsumed"].append({"name": el.get("Name"), "props": custom_props(m, el),
+            out["restConsumed"].append({"name": el.get("Name"), "description": el.get("Description"), "props": custom_props(m, el),
                                         "methods": [rest_method(m, a) for a in (cas if cas is not None else [])
                                                     if a.tag.startswith("CustomAction-")]})
         elif tag == "Timer":
-            action = el.get("ActionName") or m.names.get(last_key(el.get("Action")), "?")
-            out["timers"].append({"name": el.get("Name") or el.get("CustomName") or action, "action": action,
+            action = el.get("ActionName") or m.names.get(last_key(el.get("Action")), "<unresolved>")  # action deleted
+            out["timers"].append({"name": el.get("Name") or el.get("CustomName") or (action if action != "<unresolved>" else "<timer with deleted action>"), "action": action,
                                   "actionKey": last_key(el.get("Action")), "schedule": el.get("Schedule"),
                                   "timeout": el.get("Timeout"), "priority": el.get("Priority")})
         elif tag == "UserException" and el.get("Name"):

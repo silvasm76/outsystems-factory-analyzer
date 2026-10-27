@@ -14,7 +14,7 @@ import os
 import sys
 from collections import defaultdict
 
-import analyze_factory as af
+import layers as af
 from decompile_actions import flow_rel, safe
 
 HERE = os.path.dirname(os.path.abspath(__file__))

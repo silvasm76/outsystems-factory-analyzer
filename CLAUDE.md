@@ -28,7 +28,9 @@ call graph, pseudocode path per flow) → `checks/<pillar>.py` (`output/findings
   guidelines, module score/grade in `findings/maintainability.json` → `modules`), Performance (`checks/performance.py`;
   uses the structured `sources`/`joins`/`uses` that `extract_model` stores on aggregate and SQL nodes), Architecture
   (`checks/architecture.py`; module `dependencies` with use counts and consumed elements, layers from
-  `analyze_factory.classify`, Mermaid graph pinned to mermaid@10.9.1). To add a pillar: a `checks/<pillar>.py` with `run(ctx)`, a report function in
+  `layers.classify`, Mermaid graph pinned to mermaid@10.9.1), Application & Business Overview
+  (`generate_app_overview.py`: curated module purposes/domains/applications in `M`, all facts from the model; a new
+  module without a curated entry falls back to its XML description, so add it to `M`). To add a pillar: a `checks/<pillar>.py` with `run(ctx)`, a report function in
   `generate_reports.py`, and both registered in `run_pipeline.py`.
 
 ## Pseudocode conventions

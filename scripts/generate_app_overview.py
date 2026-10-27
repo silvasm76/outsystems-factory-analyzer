@@ -1,8 +1,9 @@
 """Render output/Application_Overview_Report.html (business/application overview).
 
-Needs output/factory_data.json (parse_factory.py) and output/overview_data.json (extract_overview.py).
-Module purposes are curated text (inferred from names, descriptions, screens, entities and services);
-all counts, screens, entities, services and dependencies come from the XML.
+Reads the extracted model (output/model/*.json) and the index (output/index.json); run extract_model.py and
+build_index.py first (run_pipeline.py does). Module purposes, domains and applications below are curated text
+(inferred from names, descriptions, screens, entities and services); every count, screen, entity, service and
+dependency comes from the model. A module with no curated entry falls back to its XML description.
 """
 import html
 import json
@@ -11,13 +12,15 @@ import sys
 from collections import Counter, defaultdict
 from datetime import date
 
-import analyze_factory as af
-from analyze_factory import CORE, END_USER, FOUNDATION
+from layers import CORE, END_USER, FOUNDATION
+from build_index import load_models
+from report_html import narrative
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "..", "output", "Application_Overview_Report.html")
-OVERVIEW_JSON = os.path.join(HERE, "..", "output", "overview_data.json")
+OUTPUT = os.path.join(HERE, "..", "output")
+OUT = os.path.join(OUTPUT, "Application_Overview_Report.html")
 esc = lambda s: html.escape(str(s), quote=True)  # noqa: E731
+TEMPLATE_ACTIONS = {"TriggerOfflineDataSync", "OfflineDataSync", "OfflineDataSyncConfiguration", "ServerDataSync"}
 
 PEOPLE, TIME, ALLOC, FIN, REC, TRAIN, MOM, PLAT, INTEG, EMAIL = (
     "People & HR", "Time & Leaves", "Allocation & Projects", "Finance & Benefits", "Recruitment",
@@ -142,33 +145,58 @@ LAYER_CLASS = {END_USER: "eu", CORE: "core", FOUNDATION: "fnd"}
 badge = lambda t, c: f'<span class="badge b-{c}">{esc(t)}</span>'  # noqa: E731
 
 
-def build():
-    data = af.load()
-    A = af.analyze(data)
-    ov = json.load(open(OVERVIEW_JSON, encoding="utf-8"))
-    mods, L, K, edge_w, elems = A["mods"], A["layer"], A["kind"], A["edge_w"], A["edge_elems"]
-    missing = sorted(set(mods) - set(M))
-    assert not missing, f"no curated description for: {missing}"
-
-    # per-module facts
-    facts = {}
+def load(output=OUTPUT):
+    """Model + index -> the shapes this report uses (layers, kinds, edges with weights and consumed elements)."""
+    models = load_models(os.path.join(output, "model"))
+    with open(os.path.join(output, "index.json"), encoding="utf-8") as fh:
+        idx = json.load(fh)
+    mods = idx["modules"]
+    L = {n: m["layer"] for n, m in mods.items()}
+    K = {n: m["kind"] for n, m in mods.items()}
+    edge_w, elems = Counter(), {}
+    for c, m in mods.items():
+        for t in m["references"]:
+            d = models[c]["dependencies"][t]
+            edge_w[(c, t)] = d["uses"]
+            elems[(c, t)] = {k: set(v) for k, v in d["elements"].items()}
+    external = defaultdict(set)
     for n, m in mods.items():
-        o = ov[n]
-        scr = uniq((s["t"] or s["n"]) for s in o["screens"] if s["n"] not in ("HomeScreen",))
-        facts[n] = {
-            "screens": scr, "entities": [e["n"] for e in o["entities"] if not e["static"]],
-            "statics": [e["n"] for e in o["entities"] if e["static"]],
-            "actions": [a["n"] for a in o["pub_actions"] if a["n"] not in ("TriggerOfflineDataSync",)],
-            "rest_x": [(r["n"], r["m"]) for r in o["rest_exposed"]], "rest_c": [r["n"] for r in o["rest_consumed"]],
-            "roles": o["roles"], "timers": [t["n"] for t in o["timers"]], "desc": o["desc"],
-            "blocks": uniq(b["name"] for b in m["blocks"].values() if b["public"]),
-        }
-    n_scr = sum(len(o["screens"]) for o in ov.values())
-    n_ent = sum(len(o["entities"]) for o in ov.values())
-    n_rest = sum(len(o["rest_exposed"]) for o in ov.values())
-    n_act = sum(1 for o in ov.values() for a in o["pub_actions"])
-    roles = sorted({r for o in ov.values() for r in o["roles"]})
-    ext_rest = sorted({r["n"] for o in ov.values() for r in o["rest_consumed"]})
+        for r in m["externalReferences"]:
+            if r != "(System)":
+                external[r].add(n)
+    return models, mods, L, K, edge_w, elems, external
+
+
+def facts_of(m):
+    flows = [f for f in m["flows"] if f["kind"] in ("ServerAction", "ClientAction", "ServiceAPIMethod")]
+    screens = [s for s in m["screens"] if s["kind"] == "Screen"]
+    return {
+        "screens": uniq((s.get("title") or s["name"]) for s in screens if s["name"] != "HomeScreen"),
+        "n_screens": len(screens),
+        "entities": [e["name"] for e in m["entities"] if not e.get("staticRecords")],
+        "statics": [e["name"] for e in m["entities"] if e.get("staticRecords")],
+        "actions": [f["name"] for f in flows if f.get("public") and f["name"] not in TEMPLATE_ACTIONS],
+        "rest_x": [(r["name"], [x["name"] for x in r["methods"]]) for r in m.get("restExposed", [])],
+        "rest_c": [r["name"] for r in m.get("restConsumed", [])],
+        "rest_c_desc": [(r["name"], r.get("description") or "") for r in m.get("restConsumed", [])],
+        "roles": m.get("roles", []), "timers": [t["name"] for t in m.get("timers", []) if t["action"] != "<unresolved>"], "desc": m.get("description") or "",
+        "blocks": uniq(s["name"] for s in m["screens"] if s["kind"] == "Block" and s.get("public")),
+    }
+
+
+def build(output=OUTPUT):
+    models, mods, L, K, edge_w, elems, external = load(output)
+    for n in mods:  # modules added after the curation: show their own description instead of failing
+        if n not in M:
+            M[n] = (PLAT if L[n] == FOUNDATION else PEOPLE, models[n].get("description") or "(no curated description yet)", "—")
+
+    facts = {n: facts_of(models[n]) for n in mods}
+    n_scr = sum(f["n_screens"] for f in facts.values())
+    n_ent = sum(len(f["entities"]) + len(f["statics"]) for f in facts.values())
+    n_rest = sum(len(f["rest_x"]) for f in facts.values())
+    n_act = sum(len(f["actions"]) for f in facts.values())
+    roles = sorted({r for f in facts.values() for r in f["roles"]})
+    ext_rest = sorted({r for f in facts.values() for r in f["rest_c"]})
     layers = Counter(L.values())
     by_domain = defaultdict(list)
     for n in mods:
@@ -177,7 +205,7 @@ def build():
     h = []
     w = h.append
     kpis = [(len(mods), "Modules", f"{layers[END_USER]} End-User · {layers[CORE]} Core · {layers[FOUNDATION]} Foundation"),
-            (n_scr, "UI screens", f"{sum(1 for n in mods if mods[n]['screens'])} modules with screens"),
+            (n_scr, "UI screens", f"{sum(1 for n in mods if facts[n]['n_screens'])} modules with screens"),
             (n_ent, "Entities", "business data tables"),
             (n_act, "Public services", "actions other modules can call"),
             (n_rest, "REST services exposed", f"{len(ext_rest)} external REST APIs consumed"),
@@ -277,17 +305,17 @@ def build():
     svc_tbl = table(["Shared module", "Layer", "Role", "Consumers", "Who uses it"], svc_rows, "tbl-shared")
 
     ext_rows = []
-    for n, o in sorted(ov.items()):
-        for r in o["rest_consumed"]:
-            ext_rows.append([f"<b>{esc(r['n'])}</b>", esc(n), esc(r["d"]) or "—"])
+    for n, f in sorted(facts.items()):
+        for name, desc in f["rest_c_desc"]:
+            ext_rows.append([f"<b>{esc(name)}</b>", esc(n), esc(desc) or "—"])
     ext_tbl = table(["External REST API", "Consumed by", "Description"], ext_rows, "tbl-rest")
-    forge = sorted(A["external"].items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    forge = sorted(external.items(), key=lambda kv: (-len(kv[1]), kv[0]))
     forge_tbl = table(["Platform / Forge component", "Used by (modules)", "Modules"],
                       [[esc(k), len(v), esc(", ".join(sorted(v)[:8]) + (" …" if len(v) > 8 else ""))] for k, v in forge], "tbl-forge", True)
     rest_x_rows = [[f"<b>{esc(a)}</b>", esc(n), esc(", ".join(b))] for n, f in sorted(facts.items()) for a, b in f["rest_x"]]
     rest_x_tbl = table(["REST service exposed", "Module", "Methods"], rest_x_rows, "tbl-restx")
 
-    purpose_text = (
+    purpose_text = narrative("overview", output) or (
         f"The factory implements <b>ERP Indigo / ProERP</b>, Indigo’s internal enterprise-resource-planning platform. Across "
         f"{len(mods)} modules and {n_scr} screens it manages the whole employee lifecycle — <b>recruitment</b> of candidates, "
         f"<b>onboarding</b> and employee/CV/skill records — and the day-to-day operations of the company: <b>timesheets</b>, "
@@ -373,8 +401,13 @@ $$('.controls button').forEach(b=>b.addEventListener('click',()=>{layer=b.datase
 document.getElementById('cardfilter').addEventListener('input',apply);
 """
 
+def overview_report(output=OUTPUT, out=None):
+    out = out or os.path.join(output, "Application_Overview_Report.html")
+    page = build(output)
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(page)
+    print(f"Wrote {os.path.abspath(out)} ({len(page) / 1024:.0f} KB)", flush=True)
+
+
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else OUT
-    page = build()
-    open(out, "w", encoding="utf-8").write(page)
-    print(f"Wrote {os.path.abspath(out)} ({len(page) / 1024:.0f} KB)")
+    overview_report(out=sys.argv[1] if len(sys.argv) > 1 else None)
