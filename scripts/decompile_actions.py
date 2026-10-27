@@ -23,12 +23,21 @@ CODE_DIR = os.path.join(HERE, "..", "output", "code")
 KIND_DIRS = {"ServerAction": "ServerActions", "ClientAction": "ClientActions", "ServiceAPIMethod": "ServiceAPI",
              "CustomAction": "CustomActions", "Callback": "Callbacks", "ExceptionFlow": "ExceptionFlows",
              "Process": "Processes", "Activity": "Processes", "Decision": "Processes", "Preparation": "Preparations",
-             "EmailPreparation": "Preparations", "OnClose": "Processes"}
+             "EmailPreparation": "Preparations", "OnClose": "Processes", "RESTMethod": "REST",
+             "RESTAuthentication": "REST"}
 IND = "    "
 
 
 def safe(name):
     return re.sub(r'[<>:"/\\|?*\s]+', "_", name or "unnamed")[:120]
+
+
+def flow_rel(f):
+    """Path (relative to the module folder) of a non-screen flow's pseudocode file."""
+    nm = f["name"]
+    if f["kind"].startswith("REST") and f.get("path"):  # method names repeat across REST services
+        nm = f["path"] + "." + nm
+    return "%s/%s.txt" % (KIND_DIRS.get(f["kind"], "Other"), safe(nm))
 
 
 def node_label(n):
@@ -226,6 +235,8 @@ def flow_text(f, callers):
         out.append("  path: " + f["path"])
     if f.get("roles"):
         out.append("  roles: " + ", ".join(f["roles"]))
+    if f.get("props"):
+        out.append("  props: " + ", ".join("%s=%s" % kv for kv in f["props"].items()))
     if f.get("description"):
         out.append("  // " + f["description"].replace("\n", " "))
     cs = callers.get(f["key"])
@@ -286,10 +297,9 @@ def decompile_module(m, code_dir):
         if f.get("screen"):
             by_screen[f["screen"]].append(f)
             continue
-        sub = KIND_DIRS.get(f["kind"], "Other")
-        rel = os.path.join(sub, safe(f["name"]) + ".txt")
-        index.append("%s%s" % (rel.replace(os.sep, "/"), "  [public]" if f.get("public") else ""))
-        os.makedirs(os.path.join(mdir, sub), exist_ok=True)
+        rel = flow_rel(f)
+        index.append("%s%s" % (rel, "  [public]" if f.get("public") else ""))
+        os.makedirs(os.path.dirname(os.path.join(mdir, rel)), exist_ok=True)
         with open(os.path.join(mdir, rel), "w", encoding="utf-8") as fh:
             fh.write("\n".join(flow_text(f, callers)) + "\n")
     for s in m["screens"]:

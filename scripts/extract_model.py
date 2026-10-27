@@ -55,6 +55,7 @@ SKIP_TAGS = {"CompilationUnits", "ElementSignatures", "ServiceStudioData", "Refe
              "TextResources", "Metadata", "StyleSheet", "Image"}
 SKIP_FRAGMENTS = {"ReferersData", "ReferersForCompilerData", "RebindData", "VerifyCaches", "CompilationUnits",
                   "Signature", "Versions"}
+CALL_TAGS = {"Nodes.ExecuteAction", "NRNodes.ExecuteClientAction", "Nodes.ErrorHandler"}
 DERIVED_NAME_TAGS = {"GroupByAttribute", "AggregateAttribute", "AnonymousStructureAttribute", "CalculatedAttribute"}
 
 
@@ -94,21 +95,16 @@ class Module:
                 for a in el.iter("AnonymousStructureAttribute"):
                     self.anon_types[a.get("Key")] = a.get("Type")
             nm = el.get("Name") or el.get("CustomName")
-            if el.tag in DERIVED_NAME_TAGS and el.get("CustomNameIsSuffix") == "Yes":
+            if el.tag in CALL_TAGS and not el.get("Name"):
+                unnamed_calls.append(el)
+            elif el.tag in DERIVED_NAME_TAGS and el.get("CustomNameIsSuffix") == "Yes":
                 derived.append(el)
             elif nm:
                 self.names[k] = nm
             elif el.tag in DERIVED_NAME_TAGS:
                 derived.append(el)
-            elif el.tag in ("Nodes.ExecuteAction", "NRNodes.ExecuteClientAction"):
-                unnamed_calls.append(el)
-        for el in unnamed_calls:  # an unnamed call node is referenced by its action's name
-            nm = self.action_name(el)
-            if nm and nm != "?":
-                parts = nm.split(".")
-                if (el.get("Action") or "").startswith("RoleActions.") and len(parts) >= 2:
-                    nm = parts[-1].replace("Role", parts[-2] + "Role", 1)  # CheckRole -> CheckXRole
-                self.names[el.get("Key")] = nm.split(".")[-1]
+        for el in unnamed_calls:
+            self.names[el.get("Key")] = self.call_node_name(el)
         for el in derived:
             nm = None
             orig = el.find("OriginalAttribute")
@@ -125,6 +121,23 @@ class Module:
             if nm:
                 self.names[el.get("Key")] = nm
         self.name_aggregate_outputs()
+
+    def call_node_name(self, el):
+        """Name an expression uses for a call/handler node with no Name: the action's name (CheckXRole for roles,
+        the exception for handlers), or CustomName, which is a suffix when CustomNameIsSuffix=Yes."""
+        if el.tag == "Nodes.ErrorHandler":  # referenced as <Exception>.ExceptionMessage
+            exc = el.get("Exception", "")
+            base = "BuiltinException" if exc.startswith("%") else self.names.get(last_key(exc), "Exception")
+        else:
+            base = self.action_name(el)
+            parts = base.split(".")
+            if (el.get("Action") or "").startswith("RoleActions.") and len(parts) >= 2:
+                base = parts[-1].replace("Role", parts[-2] + "Role", 1)  # CheckRole -> CheckXRole
+            base = base.split(".")[-1]
+        cn = el.get("CustomName")
+        if cn:
+            return base + cn if el.get("CustomNameIsSuffix") == "Yes" else cn
+        return base
 
     def name_aggregate_outputs(self):
         """Group-by outputs are anonymous attributes with no name in the XML; they are sorted by name,
@@ -402,7 +415,7 @@ class Module:
         tag = el.tag
         t = tag.split(".", 1)[1]
         n = {"key": el.get("Key"), "type": t}
-        label = el.get("Name") or el.get("Label")
+        label = el.get("Name") or el.get("Label") or (self.names.get(el.get("Key")) if el.get("CustomName") else None)
         if label:
             n["name"] = label
         links = []
@@ -481,14 +494,49 @@ class Module:
         return n
 
 
+def custom_props(m, el):
+    """Plugin settings (REST services/methods/parameters): {PropertyName: value}, empty values skipped."""
+    cps = el.find("CustomProperties")
+    out = {}
+    if cps is not None:
+        for cp in cps:
+            v = cp.get("Value") or m.expr(cp.find("ValueExpression"))
+            if v:
+                out[cp.get("PropertyName")] = v
+    return out
+
+
+def rest_method(m, el):
+    d = {"name": el.get("Name"), "props": custom_props(m, el)}
+    for sec, key in (("InputParameters", "inputs"), ("OutputParameters", "outputs")):
+        sv = el.find(sec)
+        if sv is not None and len(sv):
+            d[key] = [{"name": v.get("Name"), "type": m.type_name(v.get("Type")), "props": custom_props(m, v)}
+                      for v in sv if v.get("Name")]
+    return d
+
+
+def flow_kind(tag):
+    """Plugin flows carry a suffix: Flows.CustomActionFlow-OutSystems.Plugin.RESTService.RestServiceAction."""
+    base, _, plugin = tag.partition("-")
+    if base == "Flows.CustomActionFlow" and "RESTService" in plugin:
+        return "RESTMethod"
+    if base == "Flows.CustomCallbackFlow" and "Authentication" in plugin:
+        return "RESTAuthentication"
+    return FLOW_KINDS.get(base)
+
+
 def flow_info(m, el, kind):
     f = {"key": el.get("Key"), "kind": kind, "name": el.get("Name")}
     for a in ("Public", "IsFunction", "Description", "Title", "Anonymous", "IsDefault"):
         if el.get(a):
             f[a[0].lower() + a[1:]] = el.get(a) if a in ("Description", "Title") else el.get(a) == "Yes"
-    roles = [m.names.get(last_key(r.get("Role") or r.get("Ref")), "?") for r in el.iter() if r.tag.endswith("RoleReference") or r.tag == "Role"]
-    if roles:
-        f["roles"] = sorted(set(roles))
+    perms = el.find("Permissions")
+    if perms is not None:  # screens: the roles allowed to open it (Anonymous / Registered / custom)
+        f["roles"] = sorted({p.get("RoleName") or m.names.get(last_key(p.get("Role")), "?") for p in perms})
+    props = custom_props(m, el)
+    if props:
+        f["props"] = props
     for sec, key in (("InputParameters", "inputs"), ("OutputParameters", "outputs"), ("LocalVariables", "locals")):
         v = m.variables(el, sec)
         if v:
@@ -505,8 +553,11 @@ def extract(path):
     sig = next(root.iter("Signature"), None)
     out = {"module": es.get("Name") if es is not None else os.path.basename(path)[:-4],
            "file": os.path.basename(path), "espaceType": sig.get("ESpaceType") if sig is not None else None,
+           "description": es.get("Description") if es is not None else None,
+           "globalErrorHandler": bool(es is not None and es.get("GlobalErrorHandler")),
            "references": sorted(set(m.ref_modules.values())), "entities": [], "structures": [], "siteProperties": [],
-           "timers": [], "exceptions": [], "roles": [], "flows": [], "screens": []}
+           "timers": [], "exceptions": [], "roles": [], "restExposed": [], "restConsumed": [], "flows": [],
+           "screens": []}
 
     info = {}        # key -> {tag, name, parent}
     owner_nodes = {}  # owner key -> [node dict]
@@ -518,7 +569,10 @@ def extract(path):
             return
         k = el.get("Key")
         if tag == "Entity" and el.get("Name") and k:
-            ent = {"name": el.get("Name"), "public": el.get("Public") == "Yes", "attributes": [], "indexes": []}
+            ent = {"name": el.get("Name"), "public": el.get("Public") == "Yes",
+                   "exposeReadOnly": el.get("ExposeReadOnly") != "No", "attributes": [], "indexes": []}
+            if el.get("Description"):
+                ent["description"] = el.get("Description")
             for a in el.iter("EntityAttribute"):
                 d = {"name": a.get("Name"), "type": m.type_name(a.get("Type"))}
                 if a.get("IsMandatory") == "Yes":
@@ -542,7 +596,19 @@ def extract(path):
             return
         if tag == "Variables.SiteProperty":
             out["siteProperties"].append({"name": el.get("Name"), "type": m.type_name(el.get("Type")),
-                                          "default": m.expr(el.find("DefaultValue"))})
+                                          "default": m.expr(el.find("DefaultValue")),
+                                          "readOnly": el.get("IsReadOnlySiteProperty") == "Yes",
+                                          "description": el.get("Description")})
+        elif tag.startswith("CustomService-") and "RESTService" in tag and el.get("Name"):
+            cafs = el.find("CustomActionFlows")
+            out["restExposed"].append({"name": el.get("Name"), "props": custom_props(m, el),
+                                       "methods": [rest_method(m, f) for f in (cafs if cafs is not None else [])],
+                                       "callbacks": [c.get("Name") for c in el.iter() if c.tag.startswith("Flows.CustomCallbackFlow")]})
+        elif tag.startswith("CustomClient-") and el.get("Name"):
+            cas = el.find("CustomActions")
+            out["restConsumed"].append({"name": el.get("Name"), "props": custom_props(m, el),
+                                        "methods": [rest_method(m, a) for a in (cas if cas is not None else [])
+                                                    if a.tag.startswith("CustomAction-")]})
         elif tag == "Timer":
             action = el.get("ActionName") or m.names.get(last_key(el.get("Action")), "?")
             out["timers"].append({"name": el.get("Name") or el.get("CustomName") or action, "action": action,
@@ -553,10 +619,13 @@ def extract(path):
         elif tag == "Role" and el.get("Name") and k:
             out["roles"].append(el.get("Name"))
         if k:
-            if tag in FLOW_KINDS:
+            if flow_kind(tag):
                 info[k] = {"tag": tag, "name": el.get("Name"), "parent": parent}
                 flows.append((el, k))
                 parent, owner = k, k
+            elif tag.startswith(("CustomService-", "CustomClient-")) and el.get("Name"):
+                info[k] = {"tag": tag, "name": el.get("Name"), "parent": parent}
+                parent = k
             elif tag in SCREEN_KINDS and el.get("Name"):
                 info[k] = {"tag": tag, "name": el.get("Name"), "parent": parent}
                 screens.append((el, k))
@@ -595,7 +664,7 @@ def extract(path):
         return ".".join(reversed(parts)), screen
 
     for el, k in flows:
-        f = flow_info(m, el, FLOW_KINDS[el.tag])
+        f = flow_info(m, el, flow_kind(el.tag))
         f["path"], screen = path_of(k)
         if screen:
             f["screen"] = screen
