@@ -40,6 +40,11 @@ class Context:
             self._screens[module] = {s["key"]: s for s in self.models[module]["screens"]}
         return code_file(module, flow, self._screens[module])
 
+    @staticmethod
+    def element(flow):
+        """'<Kind> [Flow.Screen.]Name' for a finding's element column."""
+        return "%s %s%s" % (flow["kind"], flow["path"] + "." if flow.get("path") else "", flow["name"])
+
     def label(self, module, flow):
         """Module.[Flow.Screen.]Name, unique enough to tell same-named screen actions apart."""
         return "%s.%s%s" % (module, flow["path"] + "." if flow.get("path") else "", flow["name"])

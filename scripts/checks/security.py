@@ -165,7 +165,7 @@ def check_secrets(ctx, out):
                     continue
                 seen.add(key)
                 out.append(finding("SEC-08", "High", "A07 Identification and Authentication Failures",
-                                   "Hardcoded secret literal in logic", mod, "%s %s" % (f["kind"], f["name"]),
+                                   "Hardcoded secret literal in logic", mod, ctx.element(f),
                                    ctx.file_of(mod, f), "%s = %s" % (target, mask_literals(value)),
                                    "Move the secret out of the code (site property set per environment or a secrets "
                                    "store) and rotate it."))
@@ -203,7 +203,7 @@ def check_sql_injection(ctx, out):
             elif internal:
                 ev += "; value built internally (no Text input, no screen/API entry point found)"
             out.append(finding("SEC-09", sev, "A03 Injection", "SQL injection risk: Expand Inline parameter not sanitized",
-                               mod, "%s %s / SQL %s" % (f["kind"], f["name"], n.get("name")), ctx.file_of(mod, f), ev,
+                               mod, ctx.element(f) + " / SQL %s" % (n.get("name")), ctx.file_of(mod, f), ev,
                                "Wrap the value with EncodeSql() or build IN lists with BuildSafe_InClauseIntegerList/"
                                "TextList; prefer non-inline parameters wherever possible."))
 
@@ -272,13 +272,13 @@ def check_client(ctx, out):
             for sev, why in risks:
                 out.append(finding("SEC-12", sev, "A03 Injection" if "injection" in why or "XSS" in why
                                    else "A02 Cryptographic Failures", "Risky client-side JavaScript", mod,
-                                   "%s %s / JS %s" % (f["kind"], f["name"], n.get("name") or ""), ctx.file_of(mod, f),
+                                   ctx.element(f) + " / JS %s" % (n.get("name") or ""), ctx.file_of(mod, f),
                                    why + ": " + mask_literals(" ".join(js.split()))[:160],
                                    "Keep secrets and cryptography on the server; avoid eval and raw HTML injection, or "
                                    "sanitize the content first."))
         elif n["type"] == "FeedbackMessage" and any("ExceptionMessage" in (v or "") for v in n.get("fields", {}).values()):
             out.append(finding("SEC-13", "Low", "A04 Insecure Design", "Exception details shown to the end user", mod,
-                               "%s %s" % (f["kind"], f["name"]), ctx.file_of(mod, f),
+                               ctx.element(f), ctx.file_of(mod, f),
                                "; ".join("%s=%s" % kv for kv in n.get("fields", {}).items())[:200],
                                "Show a generic message to the user and log the exception detail on the server."))
 

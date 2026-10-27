@@ -22,6 +22,12 @@ INPUT_DIR = os.path.join(HERE, "..", "input")
 OUTPUT_DIR = os.path.join(HERE, "..", "output", "model")
 
 RE_LAST_KEY = re.compile(r"\.([A-Za-z0-9_+\-]{22})$")
+RE_ENTITY = re.compile(r"(?:References\.([A-Za-z0-9_+\-]{22})/ReferenceEntities\.([A-Za-z0-9_+\-]{22})|"
+                       r"(?<![A-Za-z])/?Entities\.([A-Za-z0-9_+\-]{22}))")
+RE_ENTITY_ATTR = re.compile(r"((?:References\.[A-Za-z0-9_+\-]{22}/Reference)?Entities\.[A-Za-z0-9_+\-]{22})"
+                            r"/Attributes\.([A-Za-z0-9_+\-]{22})")
+SQL_CLAUSE = re.compile(r"\b(select|from|join|on|where|group\s+by|order\s+by|having|set|values|into)\b", re.I)
+SQL_USE_KIND = {"on": "join", "where": "filter", "having": "filter", "order by": "sort", "group by": "group"}
 RE_TABLE_OP = re.compile(r"TableOperations\.([A-Za-z0-9_+\-]{22})")
 
 BUILTIN_TYPES = {
@@ -296,6 +302,11 @@ class Module:
             for op in tops:
                 ops[op.get("Key")] = op
         lines, done = [], {}
+        # structured facts for the checks: sources, joins and attributes used to join/filter/sort/group
+        meta = self.agg_meta = {"sources": [], "joins": [], "uses": []}
+        for op in ops.values():
+            if op.tag.endswith("AddSource"):
+                meta["sources"].append([(op.get("SourceName") or "?").split(".")[-1], self.entity_ref(op.get("Source"))])
 
         def label(k):
             op = ops.get(k)
@@ -331,6 +342,9 @@ class Module:
                         joined.update((l, r))
                         jt = (j.get("JoinType") or "").upper()
                         body.append("  %s JOIN %s ~ %s ON %s" % (jt, l, r, self.expr(j.find("Condition")) or "True"))
+                        meta["joins"].append([jt, l, r])
+                meta["uses"] += self.query_uses(op, "join", "Joins") + self.query_uses(op, "filter", "Filters") \
+                    + self.query_uses(op, "sort", "Sorts") + self.query_uses(op, "calc", "CalculatedAttributes")
                 calc = op.find("CalculatedAttributes")
                 if calc is not None:
                     for c in calc:
@@ -352,6 +366,8 @@ class Module:
                 lines.extend(body)
                 return name
             if op.tag.endswith("GroupBy"):
+                meta["uses"] += self.query_uses(op, "group", "GroupByAttributes") \
+                    + self.query_uses(op, "group", "AggregateAttributes")
                 k = dep_key(op)
                 src = label(k) if k else "?"
                 keys = [self.names.get(g.get("Key"), "?") for g in op.iter("GroupByAttribute")]
@@ -376,21 +392,60 @@ class Module:
         return lines
 
     # ---------- SQL ----------
+    def entity_ref(self, ref):
+        """'Module.Entity' for an entity reference (local or from a producer module)."""
+        m = RE_ENTITY.search(ref or "")
+        if not m:
+            return None
+        if m.group(1):
+            return "%s.%s" % (self.ref_modules.get(m.group(1), "?"), self.names.get(m.group(2), "?"))
+        return "%s.%s" % (self.module_name, self.names.get(m.group(3), "?"))
+
+    def attr_ref(self, ref):
+        """['Module.Entity', 'Attribute'] for an entity attribute reference, else None."""
+        m = RE_ENTITY_ATTR.search(ref or "")
+        if not m:
+            return None
+        ent = self.entity_ref(m.group(1))
+        return [ent, self.names.get(m.group(2), "?")] if ent else None
+
+    def query_uses(self, op, kind, child):
+        """Attributes referenced in an aggregate's joins/filters/sorts."""
+        out = []
+        sec = op.find(child)
+        if sec is not None:
+            for el in sec.iter():
+                ref = self.attr_ref(el.get("Ref"))
+                if ref:
+                    out.append([kind] + ref)
+        return out
+
     def sql(self, node):
         sql = node.find("SQL")
         expr = sql.find("ParsedSQLExpression") if sql is not None else None
         if expr is None:
             return ""
-        parts = []
+        parts, clause = [], "select"
+        self.sql_uses, self.sql_sources = [], []
         for c in expr:
             if c.tag in ("Text", "Unbound"):
                 parts.append(c.get("SQLText", ""))
+                kws = SQL_CLAUSE.findall(c.get("SQLText", ""))
+                if kws:
+                    clause = re.sub(r"\s+", " ", kws[-1].lower())
             elif c.tag == "Entity":
                 parts.append("{%s}" % (c.get("RefName") or "?").split(".")[-1])
+                ref = self.entity_ref(c.get("Ref"))
+                if ref:
+                    self.sql_sources.append(ref)
             elif c.tag == "Attribute":
                 ent = c.find("Entity")
                 en = (ent.get("RefName") or "?").split(".")[-1] if ent is not None else "?"
                 parts.append("{%s}.[%s]" % (en, (c.get("RefName") or "?").split(".")[-1]))
+                kind = SQL_USE_KIND.get(clause)
+                ref = self.attr_ref(c.get("Ref"))
+                if kind and ref:
+                    self.sql_uses.append([kind] + ref)
             elif c.tag == "Parameter":
                 parts.append("@" + (c.get("RefName") or "p").split(".")[-1])
             else:
@@ -452,7 +507,9 @@ class Module:
                 if v:
                     n[f[0].lower() + f[1:]] = v
         elif t in ("DataSet", "WebScreenDataSet", "ViewEntityDataDataSet"):
+            self.agg_meta = {"sources": [], "joins": [], "uses": []}
             n["query"] = self.aggregate(el)
+            n.update(self.agg_meta)
             n["out_type"] = self.type_name(el.get("Type"))
             for f in ("MaxRecords", "StartIndex"):
                 v = self.expr(el.find(f))
@@ -460,6 +517,7 @@ class Module:
                     n[f[0].lower() + f[1:]] = v
         elif t == "AdvancedQuery":
             n["sql"] = self.sql(el)
+            n["uses"], n["sources"] = getattr(self, "sql_uses", []), [[None, s] for s in sorted(set(getattr(self, "sql_sources", [])))]
             n["out_type"] = self.type_name(el.get("Type"))
             n["params"] = [[p.get("Name"), self.type_name(p.get("Type")), p.get("ExpandInline") == "Yes"]
                            for p in el.iter("Variables.AdvancedQueryParameter")]
@@ -551,6 +609,8 @@ def extract(path):
     sys.setrecursionlimit(100000)
     root = ET.parse(path).getroot()
     m = Module(root)
+    es0 = next(root.iter("ESpace"), None)
+    m.module_name = es0.get("Name") if es0 is not None else os.path.basename(path)[:-4]
     m.index_names()
     es = next(root.iter("ESpace"), None)
     sig = next(root.iter("Signature"), None)

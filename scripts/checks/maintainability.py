@@ -75,7 +75,7 @@ def check_complexity(ctx, out, metrics):
             continue
         loops = sum(1 for n in f["nodes"] if n["type"] == "ForEach")
         ifs = sum(1 for n in f["nodes"] if n["type"] in ("If", "Switch"))
-        out.append(finding("MNT-01", sev, "Complexity", "Flow too large or complex", mod, "%s %s" % (f["kind"], f["name"]),
+        out.append(finding("MNT-01", sev, "Complexity", "Flow too large or complex", mod, ctx.element(f),
                            ctx.file_of(mod, f),
                            "cyclomatic complexity %d, %d nodes, %d decisions, %d loops, %s" % (
                                cc, size, ifs, loops, "%d comment(s)" % comments if comments else "no comments"),
@@ -251,7 +251,7 @@ def check_duplicates(ctx, out, metrics):
         mod, f = g[0]
         where = [ctx.label(gm, gf) for gm, gf in g]
         out.append(finding("MNT-08", "Medium" if len(g) >= 3 else "Low", "Duplication", "Duplicated logic", mod,
-                           "%s %s" % (f["kind"], f["name"]), ctx.file_of(mod, f),
+                           ctx.element(f), ctx.file_of(mod, f),
                            "%d identical copies (%d nodes): %s" % (len(g), len(logic_nodes(f)), ", ".join(where)),
                            "Keep one implementation in the right module (a Core action or a reusable block/client action) "
                            "and call it from the others."))
@@ -269,12 +269,12 @@ def check_magic_and_params(ctx, out):
                     hits.add(mm.group(0))
         if hits:
             out.append(finding("MNT-09", "Low", "Hard-coded values", "Hard-coded identifiers instead of static entities", mod,
-                               "%s %s" % (f["kind"], f["name"]), ctx.file_of(mod, f), ", ".join(sorted(hits)),
+                               ctx.element(f), ctx.file_of(mod, f), ", ".join(sorted(hits)),
                                "Compare with static entity records (Entities.X.Y) instead of numeric ids, which differ "
                                "between environments."))
         ins = f.get("inputs", [])
         if len(ins) > 8:
-            out.append(finding("MNT-10", "Low", "Design", "Too many input parameters", mod, "%s %s" % (f["kind"], f["name"]),
+            out.append(finding("MNT-10", "Low", "Design", "Too many input parameters", mod, ctx.element(f),
                                ctx.file_of(mod, f), "%d inputs: %s" % (len(ins), ", ".join(i["name"] for i in ins)),
                                "Group related inputs in a structure or split the action by responsibility."))
 

@@ -2,6 +2,7 @@
 
   security        -> output/Security_Assessment_Report.html
   maintainability -> output/Maintainability_Report.html
+  performance     -> output/Performance_Report.html
 
 Each report starts with the executive summary in output/narrative/<report>.html when present (written from the
 findings, see prompts/NARRATIVE.md); otherwise a factual summary is generated from the counts.
@@ -227,7 +228,79 @@ covered yet.</p></section>
     print("Wrote %s (%d findings)" % (os.path.abspath(path), len(findings)), flush=True)
 
 
-REPORTS = {"security": security_report, "maintainability": maintainability_report}
+def performance_report(output=OUTPUT):
+    data = load_json(os.path.join(output, "findings", "performance.json"))
+    idx = load_json(os.path.join(output, "index.json"))
+    findings = data["findings"]
+    titles = rule_titles(os.path.join(HERE, "checks", "performance.py"))
+    by_rule = defaultdict(list)
+    for f in findings:
+        by_rule[f["rule"]].append(f)
+    counts = Counter(f["severity"] for f in findings)
+    n1_high = sum(1 for f in by_rule["PRF-01"] if f["severity"] == "High")
+
+    summary = narrative("performance", output) or (
+        '<p class="lead">%d performance findings in %d modules: %d high, %d medium. %d flows run queries or server calls inside '
+        'loops and %d attributes are filtered or joined without an index.</p>' % (
+            len(findings), len({f["module"] for f in findings}), counts["High"], counts["Medium"], len(by_rule["PRF-01"]),
+            len(by_rule["PRF-02"])))
+    k = kpis([(len(by_rule["PRF-01"]), "Queries in loops", "%d high (query or server call per iteration)" % n1_high, "high"),
+              (len(by_rule["PRF-02"]), "Missing indexes", "%d used in 6+ flows" % sum(f["severity"] == "High" for f in by_rule["PRF-02"]), "high"),
+              (len(by_rule["PRF-03"]), "Heavy client queries", "Max Records ≥ 1000 or unbounded", "med"),
+              (len(by_rule["PRF-06"]), "Broken Left Joins", "Where turns them into Inner Joins", "med"),
+              (len(by_rule["PRF-05"]), "Unused joins", "grouped aggregates", "low"),
+              (len(by_rule["PRF-07"]), "Binary in main entity", "", "med")])
+
+    def num_flows(f):
+        m = re.search(r"in (\d+) flow", f["evidence"])
+        return int(m.group(1)) if m else 0
+    idx_rows, idx_attrs = [], []
+    for f in sorted(by_rule["PRF-02"], key=lambda f: -num_flows(f)):
+        ent, attr = f["element"].split(" ", 1)[1].rsplit(".", 1)
+        uses = re.search(r"used to (\S+)", f["evidence"]).group(1)
+        idx_rows.append([sev_badge(f["severity"]), esc(f["module"]), esc(ent), "<b>%s</b>" % esc(attr), esc(uses.replace("/", ", ")),
+                         str(num_flows(f)), '<span class="mut">%s</span>' % esc(f["evidence"].split(": ", 1)[-1])])
+        idx_attrs.append({"severity": f["severity"], "module": f["module"]})
+    index_tbl = filters("idx", [("severity", "Severity", ["High", "Medium", "Low"]),
+                                ("module", "Module", sorted({f["module"] for f in by_rule["PRF-02"]}))]) + table(
+        ["Sev", "Module", "Entity", "Attribute", "Used to", "Flows", "Where"], idx_rows, "idx", numeric=(5,), row_attrs=idx_attrs)
+
+    n1 = sorted(by_rule["PRF-01"], key=lambda f: SEVERITIES.index(f["severity"]))
+    n1_rows = [[sev_badge(f["severity"]), esc(f["module"]), "<code>%s</code>" % esc(f["element"]), esc(f["evidence"]),
+                code_link(f.get("file"))] for f in n1]
+    rule_rows = [[esc(r), esc(t), str(len(by_rule.get(r, [])))] for r, t in titles.items()]
+
+    body = """
+<section id="summary"><h2>1. Executive summary</h2><div class="narr">%s</div></section>
+%s
+<section id="indexes"><h2>2. Index recommendations (%d)</h2>
+<p class="mut">Attributes used to filter, join or sort, on entities with no index starting with that attribute. Boolean flags and
+static entities are excluded. Sorted by the number of flows that use them: the top of the list is where an index pays off most.
+Check table sizes and query plans before creating them.</p>%s</section>
+<section id="loops"><h2>3. Queries and server calls inside loops (%d)</h2>%s</section>
+<section id="bymodule"><h2>4. Findings by module</h2>%s</section>
+<section id="all"><h2>5. All findings (%d)</h2>%s</section>
+<section id="method"><h2>6. Method and limitations</h2>
+<p>Rules run on the module exports (<code>scripts/checks/performance.py</code>) and follow Indigo's OS11 guidelines (no queries in
+loops, indexes on filtered attributes, pagination, no broken left joins, binaries out of main entities). Rules:</p>%s
+<p class="mut">Limitations: no data volumes or execution statistics, so severities reflect how widely a pattern is used, not measured
+time. A query "in a loop" is found in the flow itself and in the actions it calls one level down. Advanced SQL is parsed for
+attributes written as <code>{Entity}.[Attribute]</code>; columns referenced through table aliases are not seen.</p></section>
+""" % (summary, k, len(idx_rows), index_tbl, len(n1_rows),
+       table(["Sev", "Module", "Flow", "What runs per iteration", "Pseudocode"], n1_rows),
+       severity_matrix(findings, "module", "Module"), len(findings), findings_table(findings, "allf"),
+       table(["Rule", "Checks for", "Findings"], rule_rows, numeric=(2,)))
+    nav = [("summary", "Summary"), ("indexes", "Indexes"), ("loops", "Loops"), ("bymodule", "By module"),
+           ("all", "All findings"), ("method", "Method")]
+    html = page("Performance Assessment", "OutSystems factory · %d modules" % len(idx["modules"]), nav, body,
+                "Generated by scripts/generate_reports.py from output/findings/performance.json")
+    path = os.path.join(output, "Performance_Report.html")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    print("Wrote %s (%d findings)" % (os.path.abspath(path), len(findings)), flush=True)
+
+
+REPORTS = {"security": security_report, "maintainability": maintainability_report, "performance": performance_report}
 
 if __name__ == "__main__":
     for name in (sys.argv[1:] or list(REPORTS)):
