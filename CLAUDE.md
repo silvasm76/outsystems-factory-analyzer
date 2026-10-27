@@ -26,7 +26,9 @@ call graph, pseudocode path per flow) → `checks/<pillar>.py` (`output/findings
   `prompts/NARRATIVE.md`. Rewrite it whenever findings change.
 - Done: Security (`checks/security.py`), Maintainability (`checks/maintainability.py`, rules from Indigo's OS11
   guidelines, module score/grade in `findings/maintainability.json` → `modules`), Performance (`checks/performance.py`;
-  uses the structured `sources`/`joins`/`uses` that `extract_model` stores on aggregate and SQL nodes). To add a pillar: a `checks/<pillar>.py` with `run(ctx)`, a report function in
+  uses the structured `sources`/`joins`/`uses` that `extract_model` stores on aggregate and SQL nodes), Architecture
+  (`checks/architecture.py`; module `dependencies` with use counts and consumed elements, layers from
+  `analyze_factory.classify`, Mermaid graph pinned to mermaid@10.9.1). To add a pillar: a `checks/<pillar>.py` with `run(ctx)`, a report function in
   `generate_reports.py`, and both registered in `run_pipeline.py`.
 
 ## Pseudocode conventions

@@ -26,6 +26,12 @@ RE_ENTITY = re.compile(r"(?:References\.([A-Za-z0-9_+\-]{22})/ReferenceEntities\
                        r"(?<![A-Za-z])/?Entities\.([A-Za-z0-9_+\-]{22}))")
 RE_ENTITY_ATTR = re.compile(r"((?:References\.[A-Za-z0-9_+\-]{22}/Reference)?Entities\.[A-Za-z0-9_+\-]{22})"
                             r"/Attributes\.([A-Za-z0-9_+\-]{22})")
+RE_REF_ROOT = re.compile(r"References\.([A-Za-z0-9_+\-]{22})")
+RE_REF_ELEM = re.compile(r"/Reference([A-Za-z]+?)s?\.([A-Za-z0-9_+\-]{22})")
+REF_KINDS = {"Entitie": "entities", "Entity": "entities", "Action": "actions", "ClientAction": "client actions",
+             "WebBlock": "blocks", "Structure": "structures", "Role": "roles", "ServiceAPIMethod": "service actions",
+             "StaticEntitie": "entities", "SiteProperty": "site properties", "Theme": "themes", "Image": "images",
+             "Resource": "resources", "Script": "scripts", "WebScreen": "screens", "Exception": "exceptions"}
 SQL_CLAUSE = re.compile(r"\b(select|from|join|on|where|group\s+by|order\s+by|having|set|values|into)\b", re.I)
 SQL_USE_KIND = {"on": "join", "where": "filter", "having": "filter", "order by": "sort", "group by": "group"}
 RE_TABLE_OP = re.compile(r"TableOperations\.([A-Za-z0-9_+\-]{22})")
@@ -754,7 +760,40 @@ def extract(path):
         s["nodes"] = owner_nodes.get(k, [])
         out["screens"].append(s)
     out["widgetUses"] = sorted(uses)
+    out["dependencies"] = dependencies(m, root)
     return out
+
+
+def dependencies(m, root):
+    """{producer module: {uses: n, elements: {kind: [names]}}} counted over every reference in the module's own code;
+    referenced modules with uses == 0 are dependencies nothing uses."""
+    deps = {name: {"uses": 0, "elements": {}} for name in set(m.ref_modules.values())}
+    elems = {}
+    for frag in root:
+        name = frag.get("Name") or ""
+        if name in SKIP_FRAGMENTS or name == "References":
+            continue
+        for el in frag.iter():
+            for v in el.attrib.values():
+                if "References." not in v:
+                    continue
+                for seg in v.split(":")[-1:]:
+                    mm = RE_REF_ROOT.search(seg)
+                    if not mm:
+                        continue
+                    producer = m.ref_modules.get(mm.group(1))
+                    if producer is None:
+                        continue
+                    deps[producer]["uses"] += 1
+                    pairs = [p for p in RE_REF_ELEM.findall(seg) if p[0] in REF_KINDS]
+                    if pairs:
+                        kind, ek = pairs[-1]
+                        nm = m.names.get(ek)
+                        if nm:
+                            elems.setdefault(producer, {}).setdefault(REF_KINDS[kind], set()).add(nm)
+    for producer, kinds in elems.items():
+        deps[producer]["elements"] = {k: sorted(v) for k, v in sorted(kinds.items())}
+    return deps
 
 
 def _worker(job):

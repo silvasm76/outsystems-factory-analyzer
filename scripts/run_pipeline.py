@@ -15,6 +15,7 @@ STEPS = [
     ["checks/security.py"],
     ["checks/maintainability.py"],
     ["checks/performance.py"],
+    ["checks/architecture.py"],
     ["generate_reports.py"],
 ]
 

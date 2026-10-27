@@ -46,16 +46,17 @@ def build(models):
     idx = {"modules": {}, "flows": {}, "timers": []}
     consumers = defaultdict(set)
     for name, m in models.items():
-        for r in m.get("references", []):
-            if r in models:
+        for r, d in m.get("dependencies", {}).items():
+            if r in models and r != name and d["uses"]:
                 consumers[r].add(name)
     for name, m in models.items():
         screens = [s for s in m["screens"] if s["kind"] == "Screen"]
         idx["modules"][name] = {
             "layer": af.classify(name, {"screens": screens}), "kind": af.kind_of(name),
             "espaceType": m.get("espaceType"), "description": m.get("description"),
-            "references": [r for r in m.get("references", []) if r in models],
-            "externalReferences": [r for r in m.get("references", []) if r not in models],
+            "references": sorted(r for r, d in m.get("dependencies", {}).items() if r in models and r != name and d["uses"]),
+            "unusedReferences": sorted(r for r, d in m.get("dependencies", {}).items() if r != name and not d["uses"]),
+            "externalReferences": sorted(r for r in m.get("references", []) if r not in models),
             "consumers": sorted(consumers[name]),
             "counts": {"screens": len(screens), "blocks": sum(1 for s in m["screens"] if s["kind"] == "Block"),
                        "flows": len(m["flows"]), "entities": len(m["entities"]),

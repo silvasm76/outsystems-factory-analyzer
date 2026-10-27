@@ -3,6 +3,7 @@
   security        -> output/Security_Assessment_Report.html
   maintainability -> output/Maintainability_Report.html
   performance     -> output/Performance_Report.html
+  architecture    -> output/Architecture_Report.html
 
 Each report starts with the executive summary in output/narrative/<report>.html when present (written from the
 findings, see prompts/NARRATIVE.md); otherwise a factual summary is generated from the counts.
@@ -300,7 +301,139 @@ attributes written as <code>{Entity}.[Attribute]</code>; columns referenced thro
     print("Wrote %s (%d findings)" % (os.path.abspath(path), len(findings)), flush=True)
 
 
-REPORTS = {"security": security_report, "maintainability": maintainability_report, "performance": performance_report}
+LAYER_ORDER = ["End-User", "Core Services", "Foundation"]
+LAYER_CLASS = {"End-User": "low", "Core Services": "ok", "Foundation": "info"}
+MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
+
+
+def mermaid_source(mods, edges, highlight, only_issues):
+    """flowchart: one subgraph per layer, consumer --> producer; highlighted edges in red."""
+    nid = lambda n: "m_" + re.sub(r"\W", "_", n)  # noqa: E731
+    keep = set()
+    sel = []
+    for c, t, w in edges:
+        if not only_issues or (c, t) in highlight:
+            sel.append((c, t))
+            keep.update((c, t))
+    if not only_issues:
+        keep = set(mods)
+    lines = ["flowchart TB"]
+    for layer in LAYER_ORDER:
+        ms = sorted(n for n in keep if mods[n]["layer"] == layer)
+        if ms:
+            lines.append('  subgraph %s["%s"]' % (nid(layer), layer))
+            lines += ['    %s["%s"]' % (nid(n), n) for n in ms]
+            lines.append("  end")
+    red = []
+    for i, (c, t) in enumerate(sel):
+        lines.append("  %s --> %s" % (nid(c), nid(t)))
+        if (c, t) in highlight:
+            red.append(str(i))
+    if red:
+        lines.append("  linkStyle %s stroke:#dc2626,stroke-width:2px" % ",".join(red))
+    cyc = [nid(n) for n, m in mods.items() if m["inCycle"] and n in keep]
+    if cyc:
+        lines.append("  classDef cyc stroke:#f59e0b,stroke-width:3px")
+        lines.append("  class %s cyc" % ",".join(cyc))
+    return "\n".join(lines)
+
+
+def architecture_report(output=OUTPUT):
+    data = load_json(os.path.join(output, "findings", "architecture.json"))
+    findings, mods, edges = data["findings"], data["modules"], data["edges"]
+    titles = rule_titles(os.path.join(HERE, "checks", "architecture.py"))
+    by_rule = defaultdict(list)
+    for f in findings:
+        by_rule[f["rule"]].append(f)
+    layers = Counter(m["layer"] for m in mods.values())
+    highlight = set()
+    for f in findings:
+        if f["rule"] in ("ARC-01", "ARC-02", "ARC-04"):
+            c, t = f["element"].split(" → ")
+            highlight.add((c, t))
+    for comp in data["cycles"]:
+        highlight.update((c, t) for c, t, _ in edges if c in comp and t in comp)
+    per_mod = Counter(f["module"] for f in findings if f["severity"] != "Info")
+
+    summary = narrative("architecture", output) or (
+        '<p class="lead">%d modules (%s). %d layer violations, %d dependency cycles and %d unused dependencies.</p>' % (
+            len(mods), ", ".join("%d %s" % (layers[l], l) for l in LAYER_ORDER), len(by_rule["ARC-01"]) + len(by_rule["ARC-02"]),
+            len(by_rule["ARC-03"]), len(by_rule["ARC-08"])))
+    k = kpis([("%d / %d / %d" % tuple(layers[l] for l in LAYER_ORDER), "End-User / Core / Foundation", "%d module dependencies" % len(edges), ""),
+              (len(by_rule["ARC-01"]), "Upward dependencies", "lower layer consumes a higher one", "high"),
+              (len(by_rule["ARC-02"]), "Side dependencies", "End-User ↔ End-User", "med"),
+              (len(by_rule["ARC-03"]), "Dependency cycles", "%d modules involved" % sum(len(c) for c in data["cycles"]), "high"),
+              (len(by_rule["ARC-04"]), "Core inversions", "CS → BL/CW/Email", "med"),
+              (sum(len(f["evidence"].split(": ", 1)[1].split(", ")) for f in by_rule["ARC-08"]), "Unused dependencies",
+               "in %d modules" % len(by_rule["ARC-08"]), "low"),
+              (len(data["external"]), "External components", "Forge, extensions, platform", "")])
+
+    issues_src = mermaid_source(mods, edges, highlight, True)
+    full_src = mermaid_source(mods, edges, highlight, False)
+    diagram = """<div class="controls"><select id="gsel"><option value="issues">Violations and cycles only</option>
+<option value="full">All %d dependencies</option></select><span class="mut">Arrows go from consumer to producer. Red: violation or
+cycle edge. Orange border: module in a cycle.</span></div>
+<div id="gwrap" style="overflow:auto;border:1px solid var(--line);border-radius:10px;padding:8px;max-height:80vh"></div>
+<script type="text/plain" id="g-issues">%s</script><script type="text/plain" id="g-full">%s</script>
+<details><summary>Diagram source (Mermaid)</summary><pre style="white-space:pre-wrap;font-size:11px">%s</pre></details>
+<script src="%s"></script>
+<script>
+(function(){if(!window.mermaid){document.getElementById('gwrap').innerHTML='<p class="mut">Mermaid could not be loaded (offline?). The source is below.</p>';return;}
+const dark=matchMedia('(prefers-color-scheme: dark)').matches;
+mermaid.initialize({startOnLoad:false,theme:dark?'dark':'default',maxEdges:2000,flowchart:{useMaxWidth:false}});
+let n=0;async function draw(){const src=document.getElementById('g-'+document.getElementById('gsel').value).textContent;
+const {svg}=await mermaid.render('arch'+(n++),src);document.getElementById('gwrap').innerHTML=svg;}
+document.getElementById('gsel').addEventListener('change',draw);draw();})();
+</script>""" % (len(edges), issues_src, full_src, esc(full_src), MERMAID)  # raw text inside script tags
+
+    rows, attrs = [], []
+    for name, m in sorted(mods.items(), key=lambda kv: (LAYER_ORDER.index(kv[1]["layer"]), kv[0])):
+        rows.append([esc(name), badge(m["layer"], LAYER_CLASS[m["layer"]]), esc(m["kind"]), str(m["fanIn"]), str(m["fanOut"]),
+                     str(m["blast"]), "Yes" if m["inCycle"] else "", str(m["counts"]["screens"]), str(m["counts"]["entities"]),
+                     str(m["counts"]["flows"]), str(m["public"]), str(per_mod.get(name, 0) or "")])
+        attrs.append({"layer": m["layer"]})
+    catalog = filters("cat", [("layer", "Layer", LAYER_ORDER)]) + table(
+        ["Module", "Layer", "Kind", "Fan-in", "Fan-out", "Blast radius", "In cycle", "Screens", "Entities", "Flows", "Public",
+         "Findings"], rows, "cat", numeric=tuple(range(3, 12)), row_attrs=attrs)
+
+    dep_rows = [[sev_badge(f["severity"]), esc(f["rule"]), esc(titles.get(f["rule"], f["title"])), "<code>%s</code>" % esc(f["element"]),
+                 esc(f["evidence"])] for f in findings if f["rule"] in ("ARC-01", "ARC-02", "ARC-03", "ARC-04")]
+    ext_rows = [[esc(r), str(len(data["externalUse"][r])), esc(", ".join(data["externalUse"][r]))]
+                for r in sorted(data["external"], key=lambda r: -len(data["externalUse"][r]))]
+    rule_rows = [[esc(r), esc(t), str(len(by_rule.get(r, [])))] for r, t in titles.items()]
+
+    body = """
+<section id="summary"><h2>1. Executive summary</h2><div class="narr">%s</div></section>
+%s
+<section id="graph"><h2>2. Dependency graph</h2>%s</section>
+<section id="deps"><h2>3. Layer violations and cycles (%d)</h2>%s</section>
+<section id="catalog"><h2>4. Module catalog</h2>
+<p class="mut">Layer from naming conventions (_Lib/_Th/_IS = Foundation; _CS/_BL/_CW/_API/_Sync = Core; _UI/_BO/apps = End-User).
+Fan-in/out count modules that actually use the dependency; blast radius = modules affected, directly or transitively, by a change.</p>%s</section>
+<section id="all"><h2>5. All findings (%d)</h2>%s</section>
+<section id="external"><h2>6. External components (%d)</h2>
+<p class="mut">Producers outside this export: Forge components, extensions and platform modules.</p>%s</section>
+<section id="method"><h2>7. Method and limitations</h2>
+<p>Dependencies are counted from every reference in each module's own code (<code>scripts/checks/architecture.py</code>); a
+reference that nothing uses is reported as unused. Rules follow the Architecture Canvas and Indigo's OS11 module suffixes:</p>%s
+<p class="mut">Limitations: layers are inferred from module names, so a misnamed module shows up as a violation (check the
+recommendation before refactoring). Only modules in this export are known: "no consumers" may still have consumers elsewhere.</p></section>
+""" % (summary, k, diagram, len(dep_rows),
+       table(["Sev", "Rule", "Type", "Dependency", "What is consumed"], dep_rows), catalog, len(findings),
+       findings_table(findings, "allf"), len(ext_rows), table(["Component", "Used by", "Modules"], ext_rows, numeric=(1,)),
+       table(["Rule", "Checks for", "Findings"], rule_rows, numeric=(2,)))
+    nav = [("summary", "Summary"), ("graph", "Graph"), ("deps", "Violations"), ("catalog", "Modules"), ("all", "All findings"),
+           ("external", "External"), ("method", "Method")]
+    html = page("Architecture Assessment", "OutSystems factory · %d modules" % len(mods), nav, body,
+                "Generated by scripts/generate_reports.py from output/findings/architecture.json")
+    path = os.path.join(output, "Architecture_Report.html")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    print("Wrote %s (%d findings)" % (os.path.abspath(path), len(findings)), flush=True)
+
+
+REPORTS = {"security": security_report, "maintainability": maintainability_report, "performance": performance_report,
+           "architecture": architecture_report}
 
 if __name__ == "__main__":
     for name in (sys.argv[1:] or list(REPORTS)):
