@@ -13,6 +13,7 @@ STEPS = [
     ["decompile_actions.py"],
     ["build_index.py"],
     ["checks/security.py"],
+    ["checks/maintainability.py"],
     ["generate_reports.py"],
 ]
 

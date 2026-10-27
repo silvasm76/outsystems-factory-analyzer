@@ -55,6 +55,7 @@ SKIP_TAGS = {"CompilationUnits", "ElementSignatures", "ServiceStudioData", "Refe
              "TextResources", "Metadata", "StyleSheet", "Image"}
 SKIP_FRAGMENTS = {"ReferersData", "ReferersForCompilerData", "RebindData", "VerifyCaches", "CompilationUnits",
                   "Signature", "Versions"}
+USE_PREFIXES = ("NRFlows.", "Flows.UserAction", "ReferenceAction:", "ReferenceClientAction:", "ReferenceServiceAPIMethod:")
 CALL_TAGS = {"Nodes.ExecuteAction", "NRNodes.ExecuteClientAction", "Nodes.ErrorHandler"}
 DERIVED_NAME_TAGS = {"GroupByAttribute", "AggregateAttribute", "AnonymousStructureAttribute", "CalculatedAttribute"}
 
@@ -272,6 +273,8 @@ class Module:
             if not v.get("Name"):
                 continue
             d = {"name": v.get("Name"), "type": self.type_name(v.get("Type"))}
+            if v.get("Description"):
+                d["description"] = v.get("Description")
             if v.get("IsMandatory") == "Yes" or (section == "InputParameters" and v.get("IsMandatory") != "No"):
                 d["mandatory"] = True
             dv = self.expr(v.find("DefaultValue"))
@@ -559,14 +562,27 @@ def extract(path):
            "timers": [], "exceptions": [], "roles": [], "restExposed": [], "restConsumed": [], "flows": [],
            "screens": []}
 
+    uses = set()     # "Module.Action" referenced from widgets
     info = {}        # key -> {tag, name, parent}
     owner_nodes = {}  # owner key -> [node dict]
     flows, screens = [], []
+
+    def note_uses(el):
+        """Actions referenced outside flow nodes (widget events/destinations, function calls in widgets)."""
+        for attr in ("Destination", "Handler", "Ref", "Action"):
+            v = el.get(attr)
+            if v and v.startswith(USE_PREFIXES):
+                k = last_key(v)
+                if k and k in m.names:
+                    owner_mod = m.ref_owner.get(k) if v.startswith("Reference") else out["module"]
+                    uses.add("%s.%s" % (owner_mod, m.names[k]))
 
     def walk(el, parent, owner):
         tag = el.tag
         if tag in SKIP_TAGS:
             return
+        if owner is None or not tag.startswith(("Nodes.", "NRNodes.")):
+            note_uses(el)
         k = el.get("Key")
         if tag == "Entity" and el.get("Name") and k:
             ent = {"name": el.get("Name"), "public": el.get("Public") == "Yes",
@@ -575,6 +591,8 @@ def extract(path):
                 ent["description"] = el.get("Description")
             for a in el.iter("EntityAttribute"):
                 d = {"name": a.get("Name"), "type": m.type_name(a.get("Type"))}
+                if a.get("Description"):
+                    d["description"] = a.get("Description")
                 if a.get("IsMandatory") == "Yes":
                     d["mandatory"] = True
                 if a.get("Length"):
@@ -675,6 +693,7 @@ def extract(path):
         s["path"] = path_of(k)[0]
         s["nodes"] = owner_nodes.get(k, [])
         out["screens"].append(s)
+    out["widgetUses"] = sorted(uses)
     return out
 
 

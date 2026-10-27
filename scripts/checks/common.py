@@ -14,7 +14,7 @@ SCRIPTS = os.path.dirname(HERE)
 OUTPUT = os.path.join(SCRIPTS, "..", "output")
 sys.path.insert(0, SCRIPTS)
 
-from build_index import load_models  # noqa: E402
+from build_index import code_file, load_models  # noqa: E402
 
 SEVERITIES = ["Critical", "High", "Medium", "Low", "Info"]
 
@@ -27,13 +27,22 @@ class Context:
         with open(os.path.join(output, "index.json"), encoding="utf-8") as fh:
             self.index = json.load(fh)
         self.flows = self.index["flows"]
+        self._screens = {}
 
     def flow_id(self, module, flow):
         return "%s.%s" % (module, flow["name"])
 
     def file_of(self, module, flow):
-        f = self.flows.get(self.flow_id(module, flow))
-        return f["file"] if f else None
+        """Pseudocode path of this exact flow (screen actions with the same name live in different screen files)."""
+        if flow is None:
+            return None
+        if module not in self._screens:
+            self._screens[module] = {s["key"]: s for s in self.models[module]["screens"]}
+        return code_file(module, flow, self._screens[module])
+
+    def label(self, module, flow):
+        """Module.[Flow.Screen.]Name, unique enough to tell same-named screen actions apart."""
+        return "%s.%s%s" % (module, flow["path"] + "." if flow.get("path") else "", flow["name"])
 
     def callers_upstream(self, fid, depth=4):
         """All flows that reach fid through calls, up to depth levels (breadth-first)."""

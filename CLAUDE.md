@@ -24,7 +24,8 @@ call graph, pseudocode path per flow) → `checks/<pillar>.py` (`output/findings
 - Secrets are always masked (`common.mask`). Never print a credential found in the exports.
 - The executive summary of each report is `output/narrative/<report>.html`, written from the findings following
   `prompts/NARRATIVE.md`. Rewrite it whenever findings change.
-- Done: Security (`checks/security.py`). To add a pillar: a `checks/<pillar>.py` with `run(ctx)`, a report function in
+- Done: Security (`checks/security.py`), Maintainability (`checks/maintainability.py`, rules from Indigo's OS11
+  guidelines, module score/grade in `findings/maintainability.json` → `modules`). To add a pillar: a `checks/<pillar>.py` with `run(ctx)`, a report function in
   `generate_reports.py`, and both registered in `run_pipeline.py`.
 
 ## Pseudocode conventions

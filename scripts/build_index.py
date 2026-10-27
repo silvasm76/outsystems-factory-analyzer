@@ -86,6 +86,9 @@ def build(models):
             target = t["action"] if t["action"].split(".")[0] in models else "%s.%s" % (name, t["action"])
             if target in idx["flows"]:
                 idx["flows"][target]["callers"].append("%s.Timer %s" % (name, t["name"]))
+        for target in m.get("widgetUses", []):
+            if target in idx["flows"]:
+                idx["flows"][target]["callers"].append("%s (UI widget)" % name)
     for f in idx["flows"].values():
         f["callers"] = sorted(set(f["callers"]))
     return idx
